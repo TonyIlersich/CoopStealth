@@ -197,6 +197,8 @@ public class PlayerController : MonoBehaviour
 	public float m_slideSpeed;
 	public float m_slideTime;
 
+	public AnimationCurve m_slideCurve;
+
 	[Space]
 
 	public float m_slideAngleBoostMin;
@@ -418,8 +420,6 @@ public class PlayerController : MonoBehaviour
 
 		if (m_isCrouched)
 		{
-			Debug.Log("ran here");
-
 			OnSlideStart();
 			return;
 		}
@@ -594,6 +594,10 @@ public class PlayerController : MonoBehaviour
 		{
 			m_slideTimer += Time.fixedDeltaTime;
 
+			float progress = m_slideCurve.Evaluate(m_slideTimer / m_slideTime);
+
+			float currentSlideSpeed = Mathf.Lerp(m_slideSpeed, m_baseMovementProperties.m_baseMovementSpeed, progress);
+
 			SlopeInfo slopeInfo = OnSlope();
 
 			if (slopeInfo.m_onSlope)
@@ -622,7 +626,7 @@ public class PlayerController : MonoBehaviour
 			}
 			else if (!hasBeenOnSlope)
 			{
-				Vector3 slideVelocity = slideDir * m_slideSpeed;
+				Vector3 slideVelocity = slideDir * currentSlideSpeed;
 				m_velocity = new Vector3(slideVelocity.x, m_velocity.y, slideVelocity.z);
 			}
 
