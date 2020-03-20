@@ -9,17 +9,24 @@ public class PlayerControllerEvent : UnityEvent { }
 
 public class PlayerController : MonoBehaviour
 {
+	#region Player States
 	public enum MovementControllState { MovementEnabled, MovementDisabled }
 	public enum GravityState { GravityEnabled, GravityDisabled }
-	public enum DamageState { Vulnerable, Invulnerable }
-	public enum InputState { InputEnabled, InputDisabled }
-	public enum AliveState { IsAlive, IsDead }
-	public PlayerState m_states;
 
-	#region Movement Events
-	public PlayerMovementEvents m_movementEvents;
 	[System.Serializable]
-	public struct PlayerMovementEvents
+	public struct PlayerState
+	{
+		public MovementControllState m_movementControllState;
+		public GravityState m_gravityControllState;
+	}
+
+	public PlayerState m_states;
+	#endregion
+
+	#region Player Events
+	public PlayerControllerEvents m_events;
+	[System.Serializable]
+	public struct PlayerControllerEvents
 	{
 		[Header("Basic Events")]
 		public PlayerControllerEvent m_onLandedEvent;
@@ -67,6 +74,7 @@ public class PlayerController : MonoBehaviour
 	{
 		public float m_baseMovementSpeed;
 		public float m_accelerationTime;
+		public float m_slopeFriction;
 	}
 
 	[Header("Base Movement Properties")]
@@ -97,6 +105,8 @@ public class PlayerController : MonoBehaviour
 
 	[Header("Jumping Properties")]
 	public JumpingProperties m_jumpingProperties;
+
+	private bool m_hasJumped;
 
 	private float m_graceTimer;
 	private float m_jumpBufferTimer;
@@ -182,23 +192,33 @@ public class PlayerController : MonoBehaviour
 	public float m_crouchTime;
 	public float m_crouchHeight;
 
+	private bool m_isCrouched;
+
+	public float m_slideSpeed;
+	public float m_slideTime;
+
+	public float m_slideAngleBoostMin;
+	public float m_slideAngleBoostMax;
+
+	private float m_currentSlideAngleBoostSpeed;
+	private float m_currentSlideSpeed;
+	private bool m_isSliding;
+	private float m_slideTimer;
+
 	[HideInInspector]
 	public Vector2 m_movementInput;
 	private Vector2 m_lookInput;
 
-	private bool m_isStunned;
-
 	private float m_currentSpeedBoost;
 
-	private Animator m_animator;
+	public float m_slopeTolerence;
 
-	private bool m_isCrouched;
+	public float m_slopeSlideAccelerationTime;
+
 
 	private void Start()
 	{
 		m_characterController = GetComponent<CharacterController>();
-
-		m_animator = GetComponentInChildren<Animator>();
 
 		CalculateJump();
 		LockCursor();
@@ -222,30 +242,16 @@ public class PlayerController : MonoBehaviour
 
 	public void PerformController()
 	{
-		SetMovementInput(new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")));
-		SetLookInput(new Vector2(Input.GetAxisRaw("Mouse X"), Input.GetAxisRaw("Mouse Y")));
-
-		if (Input.GetKeyDown(KeyCode.Space))
-		{
-			OnJumpInputDown();
-		}
-
-		if (Input.GetKeyUp(KeyCode.Space))
-		{
-			OnJumpInputUp();
-		}
-
-		if (Input.GetKeyDown(KeyCode.LeftControl))
-		{
-			OnCrouchInputDown();
-		}
-
 		CalculateCurrentSpeed();
 		CalculateVelocity();
 
 		m_characterController.Move(m_velocity * Time.deltaTime);
 
-		CalculateGroundPhysics();
+		SlopePhysics();
+
+		ZeroOnGroundCeiling();
+		CheckLanded();
+		CheckOffLedge();
 
 		CameraRotation();
 		TiltLerp();
@@ -255,14 +261,17 @@ public class PlayerController : MonoBehaviour
 	{
 		if (!m_isCrouched)
 		{
+			if (!m_isSliding)
+			{
+				StartCoroutine(RunSlide());
+			}
+
 			StartCoroutine(RunCrouchDown());
 		}
 		else
 		{
 			StartCoroutine(RunCrouchUp());
 		}
-
-		
 	}
 
 	private IEnumerator RunCrouchDown()
@@ -299,6 +308,30 @@ public class PlayerController : MonoBehaviour
 		}
 
 		m_isCrouched = false;
+	}
+
+	private IEnumerator RunSlide()
+	{
+		m_states.m_movementControllState = MovementControllState.MovementDisabled;
+
+		m_isSliding = true;
+
+		m_slideTimer = 0;
+
+		while (m_slideTimer < m_slideTime)
+		{
+			m_slideTimer += Time.fixedDeltaTime;
+
+			m_currentSlideSpeed = m_slideSpeed;
+
+			yield return new WaitForFixedUpdate();
+		}
+
+		m_currentSlideSpeed = 0f;
+
+		m_isSliding = false;
+
+		m_states.m_movementControllState = MovementControllState.MovementEnabled;
 	}
 
 	#region Input Code
@@ -420,15 +453,19 @@ public class PlayerController : MonoBehaviour
 	}
 	#endregion
 
-	#region Player State Code
-	[System.Serializable]
-	public struct PlayerState
+	#region Physics Calculation Code
+
+	private void CalculateCurrentSpeed()
 	{
-		public MovementControllState m_movementControllState;
-		public GravityState m_gravityControllState;
-		public DamageState m_damageState;
-		public InputState m_inputState;
-		public AliveState m_aliveState;
+		float speed = m_baseMovementProperties.m_baseMovementSpeed;
+
+		speed += m_currentWallRunningSpeed;
+		speed += m_currentWallClimbSpeed;
+		speed += m_currentSpeedBoost;
+		speed += m_currentSlideSpeed;
+		speed += m_currentSlideAngleBoostSpeed;
+
+		m_currentMovementSpeed = speed;
 	}
 
 	public bool IsGrounded()
@@ -447,7 +484,7 @@ public class PlayerController : MonoBehaviour
 
 		Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
 
-		if (Physics.Raycast(bottom, Vector3.down, out hit, 0.2f))
+		if (Physics.Raycast(bottom, Vector3.down, out hit, 0.5f))
 		{
 			if (hit.normal != Vector3.up)
 			{
@@ -458,16 +495,82 @@ public class PlayerController : MonoBehaviour
 		return false;
 	}
 
+	private void SlopePhysics()
+	{
+		if (OnSlope())
+		{
+			if (m_velocity.y > 0)
+			{
+				return;
+			}
+
+			if (m_hasJumped)
+			{
+				return;
+			}
+
+			RaycastHit hit;
+
+			Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
+
+			if (Physics.Raycast(bottom, Vector3.down, out hit))
+			{
+				float slopeAngle = Vector3.Angle(Vector3.up, hit.normal);
+
+				if (slopeAngle > m_characterController.slopeLimit)
+				{
+					m_velocity.x += (1f - hit.normal.y) * hit.normal.x * (m_baseMovementProperties.m_slopeFriction);
+					m_velocity.z += (1f - hit.normal.y) * hit.normal.z * (m_baseMovementProperties.m_slopeFriction);
+				}
+
+
+
+				if (m_isSliding)
+				{
+					m_slideTimer = 0;
+
+					float anglePercent = slopeAngle / m_characterController.slopeLimit;
+					float currentSlideAngleBoost = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, anglePercent);
+
+					float normalX = hit.normal.x > 0 ? hit.normal.x : hit.normal.x * -1;
+					float normalZ = hit.normal.z > 0 ? hit.normal.z : hit.normal.z * -1;
+
+					float slopeX = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalX / m_slopeTolerence) * Mathf.Sign(hit.normal.x);
+					float slopeZ = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalZ / m_slopeTolerence) * Mathf.Sign(hit.normal.z);
+
+					Vector3 targetMovement = new Vector3(slopeX, 0, slopeZ);
+					Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetMovement, ref m_velocitySmoothing, m_slopeSlideAccelerationTime);
+
+					m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
+
+					//m_velocity.x += slopeX * Mathf.Sign(hit.normal.x);
+					//m_velocity.z += slopeZ * Mathf.Sign(hit.normal.z);
+
+					//Debug.Log(slopeZ * Mathf.Sign(hit.normal.z));
+
+				}
+
+				m_characterController.Move(new Vector3(0, -(hit.distance), 0));
+			}
+		}
+		else
+		{
+			m_currentSlideAngleBoostSpeed = 0;
+		}
+	}
+
 	private void OnLanded()
 	{
 		m_isLanded = true;
+
+		m_hasJumped = false;
 
 		if (CheckBuffer(ref m_jumpBufferTimer, ref m_jumpingProperties.m_jumpBufferTime, m_jumpBufferCoroutine))
 		{
 			JumpMaxVelocity();
 		}
 
-		m_movementEvents.m_onLandedEvent.Invoke();
+		m_events.m_onLandedEvent.Invoke();
 	}
 
 	private void OnOffLedge()
@@ -478,52 +581,16 @@ public class PlayerController : MonoBehaviour
 
 	}
 
-	public void Respawn()
-	{
-		m_movementEvents.m_onRespawnEvent.Invoke();
-
-		ResetCamera();
-	}
-	#endregion
-
-	#region Physics Calculation Code
-
-	private void CalculateCurrentSpeed()
-	{
-		float speed = m_baseMovementProperties.m_baseMovementSpeed;
-
-
-		speed += m_currentWallRunningSpeed;
-		speed += m_currentWallClimbSpeed;
-		speed += m_currentSpeedBoost;
-
-		m_currentMovementSpeed = speed;
-	}
-
-	public void SpeedBoost(float p_boostAmount)
-	{
-		m_currentSpeedBoost = p_boostAmount;
-	}
-
-	private void CalculateGroundPhysics()
+	private void ZeroOnGroundCeiling()
 	{
 		if (IsGrounded() && !OnSlope())
 		{
 			m_velocity.y = 0;
 		}
+	}
 
-		if (OnSlope())
-		{
-			RaycastHit hit;
-
-			Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
-
-			if (Physics.Raycast(bottom, Vector3.down, out hit))
-			{
-				m_characterController.Move(new Vector3(0, -(hit.distance), 0));
-			}
-		}
-
+	private void CheckOffLedge()
+	{
 		if (!IsGrounded() && !m_offLedge)
 		{
 			OnOffLedge();
@@ -532,7 +599,10 @@ public class PlayerController : MonoBehaviour
 		{
 			m_offLedge = false;
 		}
+	}
 
+	private void CheckLanded()
+	{
 		if (IsGrounded() && !m_isLanded)
 		{
 			OnLanded();
@@ -552,10 +622,8 @@ public class PlayerController : MonoBehaviour
 
 		if (m_states.m_movementControllState == MovementControllState.MovementEnabled)
 		{
-			Vector2 input = new Vector2(m_movementInput.x, m_movementInput.y);
-
-			Vector3 forwardMovement = transform.forward * input.y;
-			Vector3 rightMovement = transform.right * input.x;
+			Vector3 forwardMovement = transform.forward * m_movementInput.y;
+			Vector3 rightMovement = transform.right * m_movementInput.x;
 
 			Vector3 targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_currentMovementSpeed;
 			Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetHorizontalMovement, ref m_velocitySmoothing, m_baseMovementProperties.m_accelerationTime);
@@ -564,15 +632,15 @@ public class PlayerController : MonoBehaviour
 		}
 		else
 		{
-			Vector2 input = new Vector2(0, 0);
-
-			Vector3 forwardMovement = transform.forward * input.y;
-			Vector3 rightMovement = transform.right * input.x;
+			/*
+			Vector3 forwardMovement = transform.forward * 0;
+			Vector3 rightMovement = transform.right * 0;
 
 			Vector3 targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_currentMovementSpeed;
 			Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetHorizontalMovement, ref m_velocitySmoothing, m_baseMovementProperties.m_accelerationTime);
 
 			m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
+			*/
 		}
 
 	}
@@ -580,7 +648,7 @@ public class PlayerController : MonoBehaviour
 	public void PhysicsSeekTo(Vector3 p_targetPosition)
 	{
 		Vector3 deltaPosition = p_targetPosition - transform.position;
-		m_velocity = deltaPosition / Time.deltaTime;
+		m_velocity = deltaPosition / Time.fixedDeltaTime;
 	}
 	#endregion
 
@@ -638,7 +706,7 @@ public class PlayerController : MonoBehaviour
 
 	private void WallJump()
 	{
-		m_movementEvents.m_onWallJumpEvent.Invoke();
+		m_events.m_onWallJumpEvent.Invoke();
 
 		m_velocity.x = m_wallDir.x * m_wallRunProperties.m_wallJumpVelocity.x;
 		m_velocity.y = m_wallRunProperties.m_wallJumpVelocity.y;
@@ -649,7 +717,7 @@ public class PlayerController : MonoBehaviour
 	{
 		m_isWallRunning = false;
 
-		m_movementEvents.m_onWallRunJumpEvent.Invoke();
+		m_events.m_onWallRunJumpEvent.Invoke();
 
 		m_wallRunBufferCoroutine = StartCoroutine(RunBufferTimer((x) => m_wallRunBufferTimer = (x), m_wallRunProperties.m_wallRunBufferTime));
 
@@ -662,7 +730,7 @@ public class PlayerController : MonoBehaviour
 	{
 		m_isWallClimbing = false;
 
-		m_movementEvents.m_onWallClimbJumpEvent.Invoke();
+		m_events.m_onWallClimbJumpEvent.Invoke();
 
 		m_wallRunBufferCoroutine = StartCoroutine(RunBufferTimer((x) => m_wallRunBufferTimer = (x), m_wallRunProperties.m_wallRunBufferTime));
 
@@ -673,12 +741,13 @@ public class PlayerController : MonoBehaviour
 
 	private void GroundJump()
 	{
-		m_movementEvents.m_onJumpEvent.Invoke();
+		m_events.m_onJumpEvent.Invoke();
 		JumpMaxVelocity();
 	}
 
 	private void JumpMaxVelocity()
 	{
+		m_hasJumped = true;
 		m_velocity.y = m_maxJumpVelocity;
 	}
 
@@ -799,7 +868,7 @@ public class PlayerController : MonoBehaviour
 
 	private IEnumerator WallClimbing()
 	{
-		m_movementEvents.m_onWallClimbBeginEvent.Invoke();
+		m_events.m_onWallClimbBeginEvent.Invoke();
 
 		m_isWallClimbing = true;
 
@@ -830,12 +899,12 @@ public class PlayerController : MonoBehaviour
 
 		m_currentWallClimbSpeed = 0;
 
-		m_movementEvents.m_onWallClimbEndEvent.Invoke();
+		m_events.m_onWallClimbEndEvent.Invoke();
 	}
 
 	private IEnumerator WallRunning()
 	{
-		m_movementEvents.m_onWallRunBeginEvent.Invoke();
+		m_events.m_onWallRunBeginEvent.Invoke();
 
 		m_isWallRunning = true;
 		m_states.m_gravityControllState = GravityState.GravityDisabled;
@@ -855,8 +924,6 @@ public class PlayerController : MonoBehaviour
 			float result = Mathf.Lerp(-m_wallRunProperties.m_wallRunCameraMaxTilt, m_wallRunProperties.m_wallRunCameraMaxTilt, m_wallFacingVector.y);
 			m_tiltTarget = result;
 
-			//m_modelRoot.localPosition = new Vector3(m_wallHitDst * Mathf.Sign(result), m_modelRoot.localPosition.y, m_modelRoot.localPosition.z);
-
 			m_velocity = (m_wallVector * -m_wallFacingVector.y) * m_currentMovementSpeed;
 
 			m_velocity += (transform.right * m_wallFacingVector.y) * m_currentMovementSpeed;
@@ -872,31 +939,14 @@ public class PlayerController : MonoBehaviour
 		m_states.m_movementControllState = MovementControllState.MovementEnabled;
 		m_states.m_gravityControllState = GravityState.GravityEnabled;
 
-		//m_modelRoot.localPosition = Vector3.zero - (Vector3.up * (m_characterController.height / 2));
-
 		m_currentWallRunningSpeed = 0;
 
 		m_tiltTarget = 0f;
 
-		m_movementEvents.m_onWallRunEndEvent.Invoke();
+		m_events.m_onWallRunEndEvent.Invoke();
 	}
 
 	#endregion
-
-	public void FreezeSelf()
-	{
-		m_states.m_movementControllState = MovementControllState.MovementDisabled;
-	}
-
-	public void UnFreezeSelf()
-	{
-		m_states.m_movementControllState = MovementControllState.MovementEnabled;
-	}
-
-	private void StopAllActions()
-	{
-		StopAllCoroutines();
-	}
 
 	public bool CheckCollisionLayer(LayerMask p_layerMask, GameObject p_object)
 	{
