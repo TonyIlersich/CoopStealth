@@ -197,6 +197,8 @@ public class PlayerController : MonoBehaviour
 	public float m_slideSpeed;
 	public float m_slideTime;
 
+	[Space]
+
 	public float m_slideAngleBoostMin;
 	public float m_slideAngleBoostMax;
 
@@ -214,6 +216,14 @@ public class PlayerController : MonoBehaviour
 	public float m_slopeTolerence;
 
 	public float m_slopeSlideAccelerationTime;
+
+	private Vector3 m_slideSideShiftVelocity;
+	private Vector3 m_slideSideShiftVelocitySmoothing;
+
+	public float m_slideSideShiftMaxSpeed;
+	public float m_slideSideShiftAcceleration;
+
+	public Transform m_slopeTransform;
 
 
 	private void Start()
@@ -255,83 +265,6 @@ public class PlayerController : MonoBehaviour
 
 		CameraRotation();
 		TiltLerp();
-	}
-
-	public void OnCrouchInputDown()
-	{
-		if (!m_isCrouched)
-		{
-			if (!m_isSliding)
-			{
-				StartCoroutine(RunSlide());
-			}
-
-			StartCoroutine(RunCrouchDown());
-		}
-		else
-		{
-			StartCoroutine(RunCrouchUp());
-		}
-	}
-
-	private IEnumerator RunCrouchDown()
-	{
-		float t = 0;
-
-		while (t < m_crouchTime)
-		{
-			t += Time.fixedDeltaTime;
-
-			float progress = t / m_crouchTime;
-
-			m_characterController.height = Mathf.Lerp(2, m_crouchHeight, progress);
-
-			yield return new WaitForFixedUpdate();
-		}
-
-		m_isCrouched = true;
-	}
-
-	private IEnumerator RunCrouchUp()
-	{
-		float t = 0;
-
-		while (t < m_crouchTime)
-		{
-			t += Time.fixedDeltaTime;
-
-			float progress = t / m_crouchTime;
-
-			m_characterController.height = Mathf.Lerp(m_crouchHeight, 2, progress);
-
-			yield return new WaitForFixedUpdate();
-		}
-
-		m_isCrouched = false;
-	}
-
-	private IEnumerator RunSlide()
-	{
-		m_states.m_movementControllState = MovementControllState.MovementDisabled;
-
-		m_isSliding = true;
-
-		m_slideTimer = 0;
-
-		while (m_slideTimer < m_slideTime)
-		{
-			m_slideTimer += Time.fixedDeltaTime;
-
-			m_currentSlideSpeed = m_slideSpeed;
-
-			yield return new WaitForFixedUpdate();
-		}
-
-		m_currentSlideSpeed = 0f;
-
-		m_isSliding = false;
-
-		m_states.m_movementControllState = MovementControllState.MovementEnabled;
 	}
 
 	#region Input Code
@@ -478,92 +411,18 @@ public class PlayerController : MonoBehaviour
 		return false;
 	}
 
-	private bool OnSlope()
-	{
-		RaycastHit hit;
-
-		Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
-
-		if (Physics.Raycast(bottom, Vector3.down, out hit, 0.5f))
-		{
-			if (hit.normal != Vector3.up)
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private void SlopePhysics()
-	{
-		if (OnSlope())
-		{
-			if (m_velocity.y > 0)
-			{
-				return;
-			}
-
-			if (m_hasJumped)
-			{
-				return;
-			}
-
-			RaycastHit hit;
-
-			Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
-
-			if (Physics.Raycast(bottom, Vector3.down, out hit))
-			{
-				float slopeAngle = Vector3.Angle(Vector3.up, hit.normal);
-
-				if (slopeAngle > m_characterController.slopeLimit)
-				{
-					m_velocity.x += (1f - hit.normal.y) * hit.normal.x * (m_baseMovementProperties.m_slopeFriction);
-					m_velocity.z += (1f - hit.normal.y) * hit.normal.z * (m_baseMovementProperties.m_slopeFriction);
-				}
-
-
-
-				if (m_isSliding)
-				{
-					m_slideTimer = 0;
-
-					float anglePercent = slopeAngle / m_characterController.slopeLimit;
-					float currentSlideAngleBoost = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, anglePercent);
-
-					float normalX = hit.normal.x > 0 ? hit.normal.x : hit.normal.x * -1;
-					float normalZ = hit.normal.z > 0 ? hit.normal.z : hit.normal.z * -1;
-
-					float slopeX = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalX / m_slopeTolerence) * Mathf.Sign(hit.normal.x);
-					float slopeZ = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalZ / m_slopeTolerence) * Mathf.Sign(hit.normal.z);
-
-					Vector3 targetMovement = new Vector3(slopeX, 0, slopeZ);
-					Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetMovement, ref m_velocitySmoothing, m_slopeSlideAccelerationTime);
-
-					m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
-
-					//m_velocity.x += slopeX * Mathf.Sign(hit.normal.x);
-					//m_velocity.z += slopeZ * Mathf.Sign(hit.normal.z);
-
-					//Debug.Log(slopeZ * Mathf.Sign(hit.normal.z));
-
-				}
-
-				m_characterController.Move(new Vector3(0, -(hit.distance), 0));
-			}
-		}
-		else
-		{
-			m_currentSlideAngleBoostSpeed = 0;
-		}
-	}
-
 	private void OnLanded()
 	{
 		m_isLanded = true;
-
 		m_hasJumped = false;
+
+		if (m_isCrouched)
+		{
+			Debug.Log("ran here");
+
+			OnSlideStart();
+			return;
+		}
 
 		if (CheckBuffer(ref m_jumpBufferTimer, ref m_jumpingProperties.m_jumpBufferTime, m_jumpBufferCoroutine))
 		{
@@ -583,7 +442,7 @@ public class PlayerController : MonoBehaviour
 
 	private void ZeroOnGroundCeiling()
 	{
-		if (IsGrounded() && !OnSlope())
+		if (IsGrounded() && !OnSlope().m_onSlope)
 		{
 			m_velocity.y = 0;
 		}
@@ -649,6 +508,224 @@ public class PlayerController : MonoBehaviour
 	{
 		Vector3 deltaPosition = p_targetPosition - transform.position;
 		m_velocity = deltaPosition / Time.fixedDeltaTime;
+	}
+	#endregion
+
+	#region Slope Code
+	public void OnCrouchInputDown()
+	{
+		if (!m_isCrouched)
+		{
+			StartCoroutine(RunCrouchDown());
+		}
+		else
+		{
+			StartCoroutine(RunCrouchUp());
+		}
+	}
+
+	private IEnumerator RunCrouchDown()
+	{
+		OnSlideStart();
+
+		float t = 0;
+
+		while (t < m_crouchTime)
+		{
+			t += Time.fixedDeltaTime;
+
+			float progress = t / m_crouchTime;
+
+			m_characterController.height = Mathf.Lerp(2, m_crouchHeight, progress);
+
+			yield return new WaitForFixedUpdate();
+		}
+
+		m_isCrouched = true;
+	}
+
+	private IEnumerator RunCrouchUp()
+	{
+		m_slideTimer = m_slideTime;
+
+		m_isCrouched = false;
+
+		float t = 0;
+
+		while (t < m_crouchTime)
+		{
+			t += Time.fixedDeltaTime;
+
+			float progress = t / m_crouchTime;
+
+			m_characterController.height = Mathf.Lerp(m_crouchHeight, 2, progress);
+
+			yield return new WaitForFixedUpdate();
+		}
+
+	}
+
+	private void OnSlideStart()
+	{
+		if (!m_isSliding)
+		{
+			if (IsGrounded() || OnSlope().m_onSlope)
+			{
+				if (m_movementInput.y > 0)
+				{
+					StartCoroutine(RunSlide());
+				}
+			}
+		}
+	}
+
+	private IEnumerator RunSlide()
+	{
+		m_states.m_movementControllState = MovementControllState.MovementDisabled;
+		m_isSliding = true;
+
+	
+		Vector3 slideDir = transform.forward;
+		m_slideTimer = 0;
+
+		bool hasBeenOnSlope = false;
+
+		while (m_slideTimer < m_slideTime)
+		{
+			m_slideTimer += Time.fixedDeltaTime;
+
+			SlopeInfo slopeInfo = OnSlope();
+
+			if (slopeInfo.m_onSlope)
+			{
+				hasBeenOnSlope = true;
+
+				m_slideTimer = 0;
+
+				float normalX = slopeInfo.m_slopeNormal.x > 0 ? slopeInfo.m_slopeNormal.x : slopeInfo.m_slopeNormal.x * -1;
+				float normalZ = slopeInfo.m_slopeNormal.z > 0 ? slopeInfo.m_slopeNormal.z : slopeInfo.m_slopeNormal.z * -1;
+
+				float slopeX = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalX / m_slopeTolerence) * Mathf.Sign(slopeInfo.m_slopeNormal.x);
+				float slopeZ = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalZ / m_slopeTolerence) * Mathf.Sign(slopeInfo.m_slopeNormal.z);
+
+				slideDir = new Vector3(slopeX, 0, slopeZ);
+				Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, slideDir, ref m_velocitySmoothing, m_slopeSlideAccelerationTime);
+
+				m_slopeTransform.rotation = Quaternion.LookRotation(slideDir);
+
+				Vector3 targetX = m_slopeTransform.right * m_movementInput.x * m_slideSideShiftMaxSpeed;
+				Vector3 shiftVelX = Vector3.SmoothDamp(m_slideSideShiftVelocity, targetX, ref m_slideSideShiftVelocitySmoothing, m_slideSideShiftAcceleration);
+
+				m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
+
+				m_velocity += shiftVelX;
+			}
+			else if (!hasBeenOnSlope)
+			{
+				Vector3 slideVelocity = slideDir * m_slideSpeed;
+				m_velocity = new Vector3(slideVelocity.x, m_velocity.y, slideVelocity.z);
+			}
+
+			yield return new WaitForFixedUpdate();
+		}
+
+		m_isSliding = false;
+
+		m_states.m_movementControllState = MovementControllState.MovementEnabled;
+	}
+
+	private struct SlopeInfo
+	{
+		public bool m_onSlope;
+
+		public float m_slopeAngle;
+
+		public Vector3 m_slopeNormal;
+	}
+
+	private SlopeInfo OnSlope()
+	{
+		SlopeInfo slopeInfo = new SlopeInfo { };
+
+		RaycastHit hit;
+
+		Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
+
+		if (Physics.Raycast(bottom, Vector3.down, out hit, 0.5f))
+		{
+			if (hit.normal != Vector3.up)
+			{
+				slopeInfo.m_onSlope = true;
+				slopeInfo.m_slopeAngle = Vector3.Angle(Vector3.up, hit.normal);
+				slopeInfo.m_slopeNormal = hit.normal;
+
+				return slopeInfo;
+			}
+		}
+
+		return slopeInfo;
+	}
+
+	private void SlopePhysics()
+	{
+		SlopeInfo slopeInfo = OnSlope();
+
+		if (slopeInfo.m_onSlope == true)
+		{
+			if (m_velocity.y > 0)
+			{
+				return;
+			}
+
+			if (m_hasJumped)
+			{
+				return;
+			}
+
+			RaycastHit hit;
+
+			Vector3 bottom = m_characterController.transform.position - new Vector3(0, m_characterController.height / 2, 0);
+
+			if (Physics.Raycast(bottom, Vector3.down, out hit))
+			{
+				if (slopeInfo.m_slopeAngle > m_characterController.slopeLimit)
+				{
+					m_velocity.x += (1f - hit.normal.y) * hit.normal.x * (m_baseMovementProperties.m_slopeFriction);
+					m_velocity.z += (1f - hit.normal.y) * hit.normal.z * (m_baseMovementProperties.m_slopeFriction);
+				}
+
+				#region not suing
+				/*
+				if (m_isSliding)
+				{
+					m_slideTimer = 0;
+
+					float anglePercent = slopeAngle / m_characterController.slopeLimit;
+
+					float normalX = hit.normal.x > 0 ? hit.normal.x : hit.normal.x * -1;
+					float normalZ = hit.normal.z > 0 ? hit.normal.z : hit.normal.z * -1;
+
+					float slopeX = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalX / m_slopeTolerence) * Mathf.Sign(hit.normal.x);
+					float slopeZ = Mathf.Lerp(m_slideAngleBoostMin, m_slideAngleBoostMax, normalZ / m_slopeTolerence) * Mathf.Sign(hit.normal.z);
+
+					Vector3 targetMovement = new Vector3(slopeX, 0, slopeZ);
+					Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetMovement, ref m_velocitySmoothing, m_slopeSlideAccelerationTime);
+
+					m_slopeTransform.rotation = Quaternion.LookRotation(targetMovement);
+
+					Vector3 targetX = m_slopeTransform.right * m_movementInput.x * m_slideSideShiftMaxSpeed;
+					Vector3 shiftVelX = Vector3.SmoothDamp(m_slideSideShiftVelocity, targetX, ref m_slideSideShiftVelocitySmoothing, m_slideSideShiftAcceleration);
+
+					m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
+
+					m_velocity += shiftVelX;
+				}
+				*/
+				#endregion
+
+				m_characterController.Move(new Vector3(0, -(hit.distance), 0));
+			}
+		}
 	}
 	#endregion
 
@@ -747,6 +824,11 @@ public class PlayerController : MonoBehaviour
 
 	private void JumpMaxVelocity()
 	{
+		if (m_isCrouched)
+		{
+			StartCoroutine(RunCrouchUp());
+		}
+
 		m_hasJumped = true;
 		m_velocity.y = m_maxJumpVelocity;
 	}
