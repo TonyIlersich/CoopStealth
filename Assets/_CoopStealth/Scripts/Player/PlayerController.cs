@@ -73,6 +73,7 @@ public class PlayerController : MonoBehaviour
 	public struct BaseMovementProperties
 	{
 		public float m_baseMovementSpeed;
+		public float m_crouchMovementSpeed;
 		public float m_accelerationTime;
 		public float m_slopeFriction;
 	}
@@ -484,22 +485,20 @@ public class PlayerController : MonoBehaviour
 			Vector3 forwardMovement = transform.forward * m_movementInput.y;
 			Vector3 rightMovement = transform.right * m_movementInput.x;
 
-			Vector3 targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_currentMovementSpeed;
+			Vector3 targetHorizontalMovement = Vector3.zero;
+
+			if (!m_isCrouched)
+			{
+				targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_currentMovementSpeed;
+			}
+			else
+			{
+				targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_baseMovementProperties.m_crouchMovementSpeed;
+			}
+
 			Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetHorizontalMovement, ref m_velocitySmoothing, m_baseMovementProperties.m_accelerationTime);
 
 			m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
-		}
-		else
-		{
-			/*
-			Vector3 forwardMovement = transform.forward * 0;
-			Vector3 rightMovement = transform.right * 0;
-
-			Vector3 targetHorizontalMovement = Vector3.ClampMagnitude(forwardMovement + rightMovement, 1.0f) * m_currentMovementSpeed;
-			Vector3 horizontalMovement = Vector3.SmoothDamp(m_velocity, targetHorizontalMovement, ref m_velocitySmoothing, m_baseMovementProperties.m_accelerationTime);
-
-			m_velocity = new Vector3(horizontalMovement.x, m_velocity.y, horizontalMovement.z);
-			*/
 		}
 
 	}
@@ -596,7 +595,7 @@ public class PlayerController : MonoBehaviour
 
 			float progress = m_slideCurve.Evaluate(m_slideTimer / m_slideTime);
 
-			float currentSlideSpeed = Mathf.Lerp(m_slideSpeed, m_baseMovementProperties.m_baseMovementSpeed, progress);
+			float currentSlideSpeed = Mathf.Lerp(m_slideSpeed, m_baseMovementProperties.m_crouchMovementSpeed, progress);
 
 			SlopeInfo slopeInfo = OnSlope();
 
